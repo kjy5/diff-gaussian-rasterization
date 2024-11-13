@@ -52,6 +52,7 @@ namespace FORWARD
 	void render(
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
+		const uint64_t* point_list_keys,
 		const uint32_t* point_list,
 		int W, int H,
 		const float2* points_xy_image,
@@ -62,7 +63,10 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* depths,
-		float* depth);
+		float* depth,
+		float* alpha_values,
+		float* depth_values,
+		float* color_values);
 }
 
 

@@ -275,6 +275,7 @@ template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
+	const uint64_t* __restrict__ point_list_key,
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
@@ -285,7 +286,10 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	const float* __restrict__ depths,
-	float* __restrict__ invdepth)
+	float* __restrict__ invdepth,
+	float* __restrict__ alpha_values,
+	float* __restrict__ depth_values,
+	float* __restrict__ color_values)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -310,12 +314,15 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_depth[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+
+	uint32_t collected_contributions_count = 0;
 
 	float expected_invdepth = 0.0f;
 
@@ -335,6 +342,11 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+
+			// Splat collection.
+			const uint64_t collection_key = point_list_key[range.x + progress];
+			uint32_t depth_to_uint32 = static_cast<uint32_t>(collection_key & 0xFFFFFFFF);
+			collected_depth[block.thread_rank()] = *reinterpret_cast<float *>(&depth_to_uint32);
 		}
 		block.sync();
 
@@ -360,10 +372,33 @@ renderCUDA(
 			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
+
+			// Collect the contributing splats.
+			constexpr int contributing_splat_limit = 500;
+			if (collected_contributions_count < contributing_splat_limit) {
+				// Compute index into storage.
+				uint32_t contribution_index = pix_id * contributing_splat_limit + collected_contributions_count;
+
+				// Collect alpha and depth values.
+				alpha_values[contribution_index] = alpha;
+				depth_values[contribution_index] = collected_depth[j];
+
+				// Collect color values.
+				for (int channel = 0; channel < CHANNELS; ++channel) {
+					color_values[CHANNELS*contribution_index + channel] = features[collected_id[j] * CHANNELS + channel];
+				}
+
+				// Increment the number of collected contributions.
+				collected_contributions_count++;
+			}
+			
 			float test_T = T * (1 - alpha);
+			
+			// Skip next collections if transmittance is too low.
 			if (test_T < 0.0001f)
 			{
-				done = true;
+				// But don't mark as done yet so other threads can continue.
+				// done = true;
 				continue;
 			}
 
@@ -399,6 +434,7 @@ renderCUDA(
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
+	const uint64_t* point_list_key,
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,
@@ -409,10 +445,14 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* depths,
-	float* depth)
+	float* depth,
+	float* alpha_values,
+	float* depth_values,
+	float* color_values)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
+		point_list_key,
 		point_list,
 		W, H,
 		means2D,
@@ -423,7 +463,10 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		depths, 
-		depth);
+		depth,
+		alpha_values,
+		depth_values,
+		color_values);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
