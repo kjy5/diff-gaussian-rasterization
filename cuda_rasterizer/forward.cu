@@ -287,6 +287,7 @@ renderCUDA(
 	float* __restrict__ out_color,
 	const float* __restrict__ depths,
 	float* __restrict__ invdepth,
+	const int number_of_gaussians_per_sample,
 	float* __restrict__ alpha_values,
 	float* __restrict__ depth_values,
 	float* __restrict__ color_values)
@@ -344,7 +345,7 @@ renderCUDA(
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 
 			// Splat collection.
-			const uint64_t collection_key = point_list_key[range.x + progress];
+			uint64_t collection_key = point_list_key[range.x + progress];
 			uint32_t depth_to_uint32 = static_cast<uint32_t>(collection_key & 0xFFFFFFFF);
 			collected_depth[block.thread_rank()] = *reinterpret_cast<float *>(&depth_to_uint32);
 		}
@@ -374,18 +375,17 @@ renderCUDA(
 				continue;
 
 			// Collect the contributing splats.
-			constexpr int contributing_splat_limit = 500;
-			if (collected_contributions_count < contributing_splat_limit) {
+			if (collected_contributions_count < number_of_gaussians_per_sample) {
 				// Compute index into storage.
-				uint32_t contribution_index = pix_id * contributing_splat_limit + collected_contributions_count;
+				uint32_t contribution_index = pix_id * number_of_gaussians_per_sample + collected_contributions_count;
 
 				// Collect alpha and depth values.
 				alpha_values[contribution_index] = alpha;
 				depth_values[contribution_index] = collected_depth[j];
 
 				// Collect color values.
-				for (int channel = 0; channel < CHANNELS; ++channel) {
-					color_values[CHANNELS*contribution_index + channel] = features[collected_id[j] * CHANNELS + channel];
+				for (int c = 0; c < CHANNELS; ++c) {
+					color_values[CHANNELS*contribution_index + c] = features[collected_id[j] * CHANNELS + c];
 				}
 
 				// Increment the number of collected contributions.
@@ -446,6 +446,7 @@ void FORWARD::render(
 	float* out_color,
 	float* depths,
 	float* depth,
+	const int number_of_gaussians_per_sample,
 	float* alpha_values,
 	float* depth_values,
 	float* color_values)
@@ -464,6 +465,7 @@ void FORWARD::render(
 		out_color,
 		depths, 
 		depth,
+		number_of_gaussians_per_sample,
 		alpha_values,
 		depth_values,
 		color_values);

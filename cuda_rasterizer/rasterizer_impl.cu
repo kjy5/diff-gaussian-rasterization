@@ -322,9 +322,42 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+
+	// Setup data structures for splat collection.
+	int number_of_samples = width * height;
+	constexpr int NUM_GAUSSIANS_PER_SAMPLE = 500;
+
+	// CPU side buffers for splat collection.
+	auto alpha_values = static_cast<float *>(calloc(number_of_samples * NUM_GAUSSIANS_PER_SAMPLE, sizeof(float)));
+	auto depth_values = static_cast<float *>(calloc(number_of_samples * NUM_GAUSSIANS_PER_SAMPLE, sizeof(float)));
+	auto color_values = static_cast<float *>(calloc(number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * 3, sizeof(float)));
+	auto background_color = static_cast<float *>(calloc(3, sizeof(float)));
+	auto rendered_color = static_cast<float *>(calloc(number_of_samples * 3, sizeof(float)));
+
+	// Transfer to GPU.
+	float *device_alpha_values, *device_depth_values, *device_color_values;
+
+	// Allocate device memory for splat collection.
+	CHECK_CUDA(cudaMalloc(&device_alpha_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float)), debug);
+	CHECK_CUDA(cudaMalloc(&device_depth_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float)), debug);
+	CHECK_CUDA(cudaMalloc(&device_color_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * 3 * sizeof(float)),
+	           debug);
+
+	// Transfer buffers to GPU.
+	CHECK_CUDA(
+		cudaMemcpy(device_alpha_values, alpha_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float),
+			cudaMemcpyHostToDevice), debug);
+	CHECK_CUDA(
+		cudaMemcpy(device_depth_values, depth_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float),
+			cudaMemcpyHostToDevice), debug);
+	CHECK_CUDA(
+		cudaMemcpy(device_color_values, color_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * 3 * sizeof(float),
+			cudaMemcpyHostToDevice), debug);
+
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
+		binningState.point_list_keys,
 		binningState.point_list,
 		width, height,
 		geomState.means2D,
@@ -335,7 +368,84 @@ int CudaRasterizer::Rasterizer::forward(
 		background,
 		out_color,
 		geomState.depths,
-		depth), debug)
+		depth,
+		NUM_GAUSSIANS_PER_SAMPLE,
+		device_alpha_values,
+		device_depth_values,
+		device_color_values), debug);
+
+	// Transfer buffers back to CPU.
+	CHECK_CUDA(
+		cudaMemcpy(alpha_values, device_alpha_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float),
+			cudaMemcpyDeviceToHost), debug);
+	CHECK_CUDA(
+		cudaMemcpy(depth_values, device_depth_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * sizeof(float),
+			cudaMemcpyDeviceToHost), debug);
+	CHECK_CUDA(
+		cudaMemcpy(color_values, device_color_values, number_of_samples * NUM_GAUSSIANS_PER_SAMPLE * 3 * sizeof(float),
+			cudaMemcpyDeviceToHost), debug);
+	CHECK_CUDA(cudaMemcpy(background_color, background, 3 * sizeof(float), cudaMemcpyDeviceToHost), debug);
+	CHECK_CUDA(cudaMemcpy(rendered_color, out_color, number_of_samples * 3 * sizeof(float), cudaMemcpyDeviceToHost),
+	           debug);
+
+	// Create output file.
+	char stream_buffer[8096];
+	std::ofstream output_file;
+	output_file.rdbuf()->pubsetbuf(stream_buffer, sizeof(stream_buffer));
+
+	output_file.open("collected_splats.csv");
+
+	// Write header.
+	output_file << "sample_index,out_color_r,out_color_g,out_color_b,background_r,background_g,background_b,";
+	for (int gaussian_index = 0; gaussian_index < NUM_GAUSSIANS_PER_SAMPLE; ++gaussian_index) {
+		output_file << "gaussian_" << gaussian_index << "_alpha,gaussian_" << gaussian_index << "_depth,gaussian_" <<
+				gaussian_index << "_color_r,gaussian_" << gaussian_index << "_color_g,gaussian_" << gaussian_index <<
+				"_color_b";
+		if (gaussian_index < NUM_GAUSSIANS_PER_SAMPLE - 1) {
+			output_file << ',';
+		}
+	}
+	output_file << '\n';
+
+	// Write data.
+	for (int sample_index = 0; sample_index < number_of_samples; ++sample_index) {
+		// Write preambles.
+		output_file << sample_index << ',' << rendered_color[sample_index] << ',' << rendered_color[sample_index + 1] <<
+				',' <<
+				rendered_color[sample_index + 2] << ',' << background_color[0] << ',' << background_color[1] << ',' <<
+				background_color[2] << ',';
+
+		// Write Gaussian data.
+		for (int gaussian_index = 0; gaussian_index < NUM_GAUSSIANS_PER_SAMPLE; ++gaussian_index) {
+			output_file << alpha_values[sample_index * NUM_GAUSSIANS_PER_SAMPLE + gaussian_index] << ',' <<
+					depth_values[sample_index * NUM_GAUSSIANS_PER_SAMPLE + gaussian_index] << ',' <<
+					color_values[sample_index * NUM_GAUSSIANS_PER_SAMPLE * 3 + gaussian_index * 3] << ',' <<
+					color_values[sample_index * NUM_GAUSSIANS_PER_SAMPLE * 3 + gaussian_index * 3 + 1] << ',' <<
+					color_values[sample_index * NUM_GAUSSIANS_PER_SAMPLE * 3 + gaussian_index * 3 + 2];
+
+			if (gaussian_index < NUM_GAUSSIANS_PER_SAMPLE - 1) {
+				output_file << ',';
+			}
+		}
+
+		if (sample_index < number_of_samples - 1) {
+			output_file << '\n';
+		}
+	}
+	output_file << std::endl;
+
+	// Close file.
+	output_file.close();
+
+	// Cleanup.
+	CHECK_CUDA(cudaFree(device_alpha_values), debug);
+	CHECK_CUDA(cudaFree(device_depth_values), debug);
+	CHECK_CUDA(cudaFree(device_color_values), debug);
+	free(alpha_values);
+	free(depth_values);
+	free(color_values);
+	free(background_color);
+	free(rendered_color);
 
 	return num_rendered;
 }

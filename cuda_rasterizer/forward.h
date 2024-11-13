@@ -64,6 +64,7 @@ namespace FORWARD
 		float* out_color,
 		float* depths,
 		float* depth,
+		int number_of_gaussians_per_sample,
 		float* alpha_values,
 		float* depth_values,
 		float* color_values);
