@@ -377,7 +377,7 @@ renderCUDA(
 			// Collect the contributing splats.
 			if (collected_contributions_count < number_of_gaussians_per_sample) {
 				// Compute index into storage.
-				uint32_t contribution_index = pix_id * number_of_gaussians_per_sample + collected_contributions_count;
+				const uint32_t contribution_index = pix_id * number_of_gaussians_per_sample + collected_contributions_count;
 
 				// Collect alpha and depth values.
 				alpha_values[contribution_index] = alpha;
@@ -407,7 +407,7 @@ renderCUDA(
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
 			if(invdepth)
-			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+				expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
 
 			T = test_T;
 

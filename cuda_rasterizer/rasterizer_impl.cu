@@ -410,9 +410,11 @@ int CudaRasterizer::Rasterizer::forward(
 	// Write data.
 	for (int sample_index = 0; sample_index < number_of_samples; ++sample_index) {
 		// Write preambles.
-		output_file << sample_index << ',' << rendered_color[sample_index] << ',' << rendered_color[sample_index + 1] <<
+		output_file << sample_index << ',' << rendered_color[sample_index] << ',' << rendered_color[
+					number_of_samples + sample_index] <<
 				',' <<
-				rendered_color[sample_index + 2] << ',' << background_color[0] << ',' << background_color[1] << ',' <<
+				rendered_color[2 * number_of_samples + sample_index] << ',' << background_color[0] << ',' <<
+				background_color[1] << ',' <<
 				background_color[2] << ',';
 
 		// Write Gaussian data.
