@@ -138,3 +138,5 @@ CMakeUserPresets.json
 *-prefix/
 
 # End of https://www.toptal.com/developers/gitignore/api/clion,cmake
+
+diff_gaussian_rasterization/_C.cp37-win_amd64.pyd
