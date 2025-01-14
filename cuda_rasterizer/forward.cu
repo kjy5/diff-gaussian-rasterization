@@ -321,6 +321,20 @@ renderCUDA(
 
 	float expected_invdepth = 0.0f;
 
+	// Initialize clustering variables.
+
+	/// Cluster data is stored in a linearized of K * data points array.
+	float cluster_data[NUMBER_OF_CLUSTERS * NUMBER_OF_DATA_POINTS] = {};
+
+	// Set transmittance to 1.0 for all clusters.
+	for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+	{
+		cluster_data[NUMBER_OF_CLUSTERS * cluster_index + TRANSMITTANCE_INDEX] = 1.0f;
+	}
+
+	/// Index of the next uninitialized cluster.
+	int cluster_initialization_index = 0;
+
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
@@ -368,19 +382,19 @@ renderCUDA(
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			// TODO: Implement SKM here.
-            const float splat_alpha = alpha;
-			const float splat_depth = collected_depth[j];
-			const float splat_r = features[collected_id[j] * CHANNELS + 0];
-			const float splat_g = features[collected_id[j] * CHANNELS + 1];
-			const float splat_b = features[collected_id[j] * CHANNELS + 2];
-
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
 				done = true;
 				continue;
 			}
+
+			// TODO: Implement SKM here.
+            const float splat_alpha = alpha;
+			const float splat_depth = collected_depth[j];
+			const float splat_r = features[collected_id[j] * CHANNELS + 0];
+			const float splat_g = features[collected_id[j] * CHANNELS + 1];
+			const float splat_b = features[collected_id[j] * CHANNELS + 2];
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)

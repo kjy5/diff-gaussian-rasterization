@@ -18,6 +18,18 @@
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
+// SKM parameters.
+#define NUMBER_OF_CLUSTERS 12
+#define NUMBER_OF_DATA_POINTS 7
+#define DEPTH_INDEX 0
+#define SPLAT_COUNT_INDEX 1
+#define ALPHA_SUM_INDEX 2
+#define TRANSMITTANCE_INDEX 3
+#define COLOR_R_INDEX 4
+#define COLOR_G_INDEX 5
+#define COLOR_B_INDEX 6
+
+
 namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
