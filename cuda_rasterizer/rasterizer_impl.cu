@@ -325,6 +325,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
+		binningState.point_list_keys,
 		binningState.point_list,
 		width, height,
 		geomState.means2D,

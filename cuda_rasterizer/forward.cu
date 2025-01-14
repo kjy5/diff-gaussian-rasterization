@@ -275,6 +275,7 @@ template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
+	const uint64_t* __restrict__ point_list_key,
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
@@ -310,6 +311,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_depth[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -335,6 +337,11 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+
+			// Compute collected depth.
+			uint64_t collection_key = point_list_key[range.x + progress];
+			uint32_t depth_to_uint32 = static_cast<uint32_t>(collection_key & 0xFFFFFFFF);
+			collected_depth[block.thread_rank()] = *reinterpret_cast<float*>(&depth_to_uint32);
 		}
 		block.sync();
 
@@ -360,6 +367,14 @@ renderCUDA(
 			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
+
+			// TODO: Implement SKM here.
+            const float splat_alpha = alpha;
+			const float splat_depth = collected_depth[j];
+			const float splat_r = features[collected_id[j] * CHANNELS + 0];
+			const float splat_g = features[collected_id[j] * CHANNELS + 1];
+			const float splat_b = features[collected_id[j] * CHANNELS + 2];
+
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
@@ -399,6 +414,7 @@ renderCUDA(
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
+	const uint64_t* point_list_key,
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,
@@ -413,6 +429,7 @@ void FORWARD::render(
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
+		point_list_key,
 		point_list,
 		W, H,
 		means2D,
