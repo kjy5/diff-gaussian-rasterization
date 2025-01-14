@@ -322,6 +322,9 @@ renderCUDA(
 	float expected_invdepth = 0.0f;
 
 	// Initialize clustering variables.
+	// For each pixel, [ K x [ mean, number, alpha_sum, transmittance, premultiplied_r, premultiplied_g, premultiplied_b ] ]
+	// After clustering, (1 - transmittance) gives final cluster alpha, and (pre_multiplied_color / alpha_sum) gives final cluster color
+
 
 	/// Cluster data is stored in a linearized of K * data points array.
 	float cluster_data[NUMBER_OF_CLUSTERS * NUMBER_OF_DATA_POINTS] = {};
@@ -332,8 +335,8 @@ renderCUDA(
 		cluster_data[NUMBER_OF_CLUSTERS * cluster_index + TRANSMITTANCE_INDEX] = 1.0f;
 	}
 
-	/// Index of the next uninitialized cluster.
-	int cluster_initialization_index = 0;
+	/// Flag for if the initial cluster guesses have been found.
+	bool initial_guesses_found = false;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -397,13 +400,65 @@ renderCUDA(
 			const float splat_r = features[collected_id[j] * CHANNELS + 0];
 			const float splat_g = features[collected_id[j] * CHANNELS + 1];
 			const float splat_b = features[collected_id[j] * CHANNELS + 2];
-			int target_cluster_index = -1;
+			int target_cluster_index;
 
-			// Handle initializing clusters.
-			if (cluster_initialization_index < NUMBER_OF_CLUSTERS)
+			// Compute which cluster this splat will go to.
+			if (!initial_guesses_found)
 			{
-				target_cluster_index = cluster_initialization_index;
+				// Loop through each non-zero cluster and check for an exact match.
+				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+				{
+					// Use the cluster if it's exactly the same depth.
+					if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] == splat_depth)
+					{
+						target_cluster_index = cluster_index;
+						break;
+					}
+
+					// Skip if cluster is not empty.
+					if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] != 0.0f)
+						continue;
+
+					// Use the cluster if it's empty.
+					target_cluster_index = cluster_index;
+
+					// If all clusters have been initialized, stop looking.
+					if (cluster_index == NUMBER_OF_CLUSTERS - 1)
+						initial_guesses_found = true;
+
+					// We've found a cluster if we got here, so stop looking.
+					break;
+				}
 			}
+			else
+			{
+				float current_closest_depth_distance = FLT_MAX;
+				// If all clusters are initialized, find the closest cluster.
+				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+				{
+					// Replace the target index if it's closer.
+					if (const float distance_to_cluster = fabs(
+							cluster_data(DATA_AT(cluster_index, DEPTH_INDEX) - splat_depth)); distance_to_cluster <
+						current_closest_depth_distance)
+					{
+						current_closest_depth_distance = distance_to_cluster;
+						target_cluster_index = cluster_index;
+					}
+				}
+			}
+
+			// Update cluster information.
+			cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)]++;
+			cluster_data[DATA_AT(target_cluster_index, ALPHA_SUM_INDEX)] += splat_alpha;
+			cluster_data[DATA_AT(target_cluster_index, TRANSMITTANCE_INDEX)] *= 1 - splat_alpha;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_R_INDEX)] += splat_alpha * splat_r;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_G_INDEX)] += splat_alpha * splat_g;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_B_INDEX)] += splat_alpha * splat_b;
+
+			// Update cluster mean.
+			const float current_mean = cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)];
+			cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)] = current_mean + (splat_depth - current_mean) /
+				cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)];
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
@@ -426,6 +481,20 @@ renderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
+
+		// Compute final transmittance and color.
+		for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+		{
+			cluster_data[DATA_AT(cluster_index, TRANSMITTANCE_INDEX)] = 1 - cluster_data[DATA_AT(
+				cluster_index, TRANSMITTANCE_INDEX)];
+			cluster_data[DATA_AT(cluster_index, PREMULTIPLIED_R_INDEX)] /= cluster_data[DATA_AT(
+				cluster_index, ALPHA_SUM_INDEX)];
+			cluster_data[DATA_AT(cluster_index, PREMULTIPLIED_G_INDEX)] /= cluster_data[DATA_AT(
+				cluster_index, ALPHA_SUM_INDEX)];
+			cluster_data[DATA_AT(cluster_index, PREMULTIPLIED_B_INDEX)] /= cluster_data[DATA_AT(
+				cluster_index, ALPHA_SUM_INDEX)];
+		}
+
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
