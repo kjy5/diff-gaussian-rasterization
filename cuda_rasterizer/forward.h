@@ -20,6 +20,7 @@
 
 // SKM parameters.
 #define NUMBER_OF_CLUSTERS 12
+// FIXME: Assumes channels is always 3.
 #define NUMBER_OF_DATA_POINTS 7
 #define DEPTH_INDEX 0
 #define SPLAT_COUNT_INDEX 1

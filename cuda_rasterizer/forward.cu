@@ -437,7 +437,7 @@ renderCUDA(
 				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
 				{
 					// Replace the target index if it's closer.
-					if (const float distance_to_cluster = fabs(
+					if (const float distance_to_cluster = abs(
 							cluster_data(DATA_AT(cluster_index, DEPTH_INDEX) - splat_depth)); distance_to_cluster <
 						current_closest_depth_distance)
 					{
@@ -459,10 +459,6 @@ renderCUDA(
 			const float current_mean = cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)];
 			cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)] = current_mean + (splat_depth - current_mean) /
 				cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)];
-
-			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
 			if(invdepth)
 			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
@@ -493,6 +489,53 @@ renderCUDA(
 				cluster_index, ALPHA_SUM_INDEX)];
 			cluster_data[DATA_AT(cluster_index, PREMULTIPLIED_B_INDEX)] /= cluster_data[DATA_AT(
 				cluster_index, ALPHA_SUM_INDEX)];
+		}
+
+		/// Alpha over clusters.
+		float transmittance = 1.0f;
+		float last_minimum_depth = 0.0f;
+
+		// Process each cluster.
+		for (int cluster_number = 0; cluster_number < NUMBER_OF_CLUSTERS; ++cluster_number)
+		{
+			// Find the next smallest depth that is larger than the last minimum depth.
+			int target_cluster_index;
+			float current_minimum_depth = FLT_MAX;
+			for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+			{
+				if (const float this_cluster_depth = cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)];
+					this_cluster_depth > last_minimum_depth && this_cluster_depth < current_minimum_depth)
+				{
+					current_minimum_depth = this_cluster_depth;
+					target_cluster_index = cluster_index;
+				}
+			}
+
+			// Found the next cluster to process. Update last minimum depth.
+			last_minimum_depth = current_minimum_depth;
+
+			// Get cluster data.
+			const float cluster_alpha = cluster_data[DATA_AT(target_cluster_index, TRANSMITTANCE_INDEX)];
+			const float cluster_r = cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_R_INDEX)];
+			const float cluster_g = cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_G_INDEX)];
+			const float cluster_b = cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_B_INDEX)];
+
+
+			// Skip cluster if it's transparent.
+			if (cluster_data[DATA_AT(target_cluster_index, TRANSMITTANCE_INDEX)] == 0.0f)
+				continue;
+
+			// Exit once the transmittance is at the minimum.
+			if (transmittance <= MINIMUM_TRANSMITTANCE)
+				break;
+
+			// Contribute to the final color.
+			C[0] += cluster_alpha * cluster_r * transmittance;
+			C[1] += cluster_alpha * cluster_g * transmittance;
+			C[2] += cluster_alpha * cluster_b * transmittance;
+
+			// Update transmittance.
+			transmittance *= 1 - min(1.0f, cluster_alpha);
 		}
 
 		for (int ch = 0; ch < CHANNELS; ch++)
