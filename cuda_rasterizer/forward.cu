@@ -390,11 +390,20 @@ renderCUDA(
 			}
 
 			// TODO: Implement SKM here.
+
+			// Collect data for clustering.
             const float splat_alpha = alpha;
 			const float splat_depth = collected_depth[j];
 			const float splat_r = features[collected_id[j] * CHANNELS + 0];
 			const float splat_g = features[collected_id[j] * CHANNELS + 1];
 			const float splat_b = features[collected_id[j] * CHANNELS + 2];
+			int target_cluster_index = -1;
+
+			// Handle initializing clusters.
+			if (cluster_initialization_index < NUMBER_OF_CLUSTERS)
+			{
+				target_cluster_index = cluster_initialization_index;
+			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
