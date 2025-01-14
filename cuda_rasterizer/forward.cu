@@ -437,9 +437,9 @@ renderCUDA(
 				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
 				{
 					// Replace the target index if it's closer.
-					if (const float distance_to_cluster = abs(
-							cluster_data(DATA_AT(cluster_index, DEPTH_INDEX) - splat_depth)); distance_to_cluster <
-						current_closest_depth_distance)
+					const float distance_to_cluster = fabsf(
+						cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] - splat_depth);
+					if (distance_to_cluster < current_closest_depth_distance)
 					{
 						current_closest_depth_distance = distance_to_cluster;
 						target_cluster_index = cluster_index;
@@ -503,8 +503,8 @@ renderCUDA(
 			float current_minimum_depth = FLT_MAX;
 			for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
 			{
-				if (const float this_cluster_depth = cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)];
-					this_cluster_depth > last_minimum_depth && this_cluster_depth < current_minimum_depth)
+				const float this_cluster_depth = cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)];
+				if (this_cluster_depth > last_minimum_depth && this_cluster_depth < current_minimum_depth)
 				{
 					current_minimum_depth = this_cluster_depth;
 					target_cluster_index = cluster_index;
