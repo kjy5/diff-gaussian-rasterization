@@ -307,6 +307,12 @@ renderCUDA(
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
 
+	// Allocate storage for batches of collectively fetched data.
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_depth[BLOCK_SIZE];
+
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
@@ -333,7 +339,8 @@ renderCUDA(
 	bool initial_guesses_found = false;
 
 	// Iterate over batches until all done or range is complete
-	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE) {
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
 		// End if entire block votes that it is done rasterizing
 		int num_done = __syncthreads_count(done);
 		if (num_done == BLOCK_SIZE)
@@ -344,112 +351,123 @@ renderCUDA(
 		if (range.x + progress < range.y)
 		{
 			int coll_id = point_list[range.x + progress];
-			float2 xy = points_xy_image[coll_id];
-			float4 con_o = conic_opacity[coll_id];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 
 			// Compute collected depth.
 			uint64_t collection_key = point_list_key[range.x + progress];
 			uint32_t depth_to_uint32 = static_cast<uint32_t>(collection_key & 0xFFFFFFFF);
-			float collected_depth = *reinterpret_cast<float *>(&depth_to_uint32);
+			collected_depth[block.thread_rank()] = *reinterpret_cast<float*>(&depth_to_uint32);
+		}
+		block.sync();
 
-			// Iterate over current batch
-			for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++) {
-				// Keep track of current position in range
-				contributor++;
+		// Iterate over current batch
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		{
+			// Keep track of current position in range
+			contributor++;
 
-				// Resample using conic matrix (cf. "Surface
-				// Splatting" by Zwicker et al., 2001)
-				float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-				float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-				if (power > 0.0f)
-					continue;
+			// Resample using conic matrix (cf. "Surface
+			// Splatting" by Zwicker et al., 2001)
+			float2 xy = collected_xy[j];
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			float4 con_o = collected_conic_opacity[j];
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			if (power > 0.0f)
+				continue;
 
-				// Eq. (2) from 3D Gaussian splatting paper.
-				// Obtain alpha by multiplying with Gaussian opacity
-				// and its exponential falloff from mean.
-				// Avoid numerical instabilities (see paper appendix).
-				float alpha = min(0.99f, con_o.w * exp(power));
-				if (alpha < 1.0f / 255.0f)
-					continue;
+			// Eq. (2) from 3D Gaussian splatting paper.
+			// Obtain alpha by multiplying with Gaussian opacity
+			// and its exponential falloff from mean.
+			// Avoid numerical instabilities (see paper appendix).
+			float alpha = min(0.99f, con_o.w * exp(power));
+			if (alpha < 1.0f / 255.0f)
+				continue;
 
-				float test_T = T * (1 - alpha);
-				if (test_T < 0.0001f) {
-					done = true;
-					continue;
-				}
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f)
+			{
+				done = true;
+				continue;
+			}
 
-				// Implement SKM here:
+			// TODO: Implement SKM here.
 
-				// Collect data for clustering.
-				const float splat_alpha = alpha;
-				const float splat_depth = collected_depth;
-				const float splat_r = features[coll_id * CHANNELS + 0];
-				const float splat_g = features[coll_id * CHANNELS + 1];
-				const float splat_b = features[coll_id * CHANNELS + 2];
-				int target_cluster_index;
+			// Collect data for clustering.
+            const float splat_alpha = alpha;
+			const float splat_depth = collected_depth[j];
+			const float splat_r = features[collected_id[j] * CHANNELS + 0];
+			const float splat_g = features[collected_id[j] * CHANNELS + 1];
+			const float splat_b = features[collected_id[j] * CHANNELS + 2];
+			int target_cluster_index;
 
-				// Compute which cluster this splat will go to.
-				if (!initial_guesses_found) {
-					// Loop through each non-zero cluster and check for an exact match.
-					for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index) {
-						// Use the cluster if it's exactly the same depth.
-						if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] == splat_depth) {
-							target_cluster_index = cluster_index;
-							break;
-						}
-
-						// Skip if cluster is not empty.
-						if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] != 0.0f)
-							continue;
-
-						// Use the cluster if it's empty.
+			// Compute which cluster this splat will go to.
+			if (!initial_guesses_found)
+			{
+				// Loop through each non-zero cluster and check for an exact match.
+				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+				{
+					// Use the cluster if it's exactly the same depth.
+					if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] == splat_depth)
+					{
 						target_cluster_index = cluster_index;
-
-						// If all clusters have been initialized, stop looking.
-						if (cluster_index == NUMBER_OF_CLUSTERS - 1)
-							initial_guesses_found = true;
-
-						// We've found a cluster if we got here, so stop looking.
 						break;
 					}
-				} else {
-					float current_closest_depth_distance = FLT_MAX;
-					// If all clusters are initialized, find the closest cluster.
-					for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index) {
-						// Replace the target index if it's closer.
-						const float distance_to_cluster = fabsf(
-							cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] - splat_depth);
-						if (distance_to_cluster < current_closest_depth_distance) {
-							current_closest_depth_distance = distance_to_cluster;
-							target_cluster_index = cluster_index;
-						}
+
+					// Skip if cluster is not empty.
+					if (cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] != 0.0f)
+						continue;
+
+					// Use the cluster if it's empty.
+					target_cluster_index = cluster_index;
+
+					// If all clusters have been initialized, stop looking.
+					if (cluster_index == NUMBER_OF_CLUSTERS - 1)
+						initial_guesses_found = true;
+
+					// We've found a cluster if we got here, so stop looking.
+					break;
+				}
+			}
+			else
+			{
+				float current_closest_depth_distance = FLT_MAX;
+				// If all clusters are initialized, find the closest cluster.
+				for (int cluster_index = 0; cluster_index < NUMBER_OF_CLUSTERS; ++cluster_index)
+				{
+					// Replace the target index if it's closer.
+					const float distance_to_cluster = fabsf(
+						cluster_data[DATA_AT(cluster_index, DEPTH_INDEX)] - splat_depth);
+					if (distance_to_cluster < current_closest_depth_distance)
+					{
+						current_closest_depth_distance = distance_to_cluster;
+						target_cluster_index = cluster_index;
 					}
 				}
-
-				// Update cluster information.
-				cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)]++;
-				cluster_data[DATA_AT(target_cluster_index, ALPHA_SUM_INDEX)] += splat_alpha;
-				cluster_data[DATA_AT(target_cluster_index, TRANSMITTANCE_INDEX)] *= 1 - splat_alpha;
-				cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_R_INDEX)] += splat_alpha * splat_r;
-				cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_G_INDEX)] += splat_alpha * splat_g;
-				cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_B_INDEX)] += splat_alpha * splat_b;
-
-				// Update cluster mean.
-				const float current_mean = cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)];
-				cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)] = current_mean + (splat_depth - current_mean) /
-				                                                           cluster_data[DATA_AT(
-					                                                           target_cluster_index,
-					                                                           SPLAT_COUNT_INDEX)];
-
-				if (invdepth)
-					expected_invdepth += (1 / depths[coll_id]) * alpha * T;
-
-				T = test_T;
-
-				// Keep track of last range entry to update this
-				// pixel.
-				last_contributor = contributor;
 			}
+
+			// Update cluster information.
+			cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)]++;
+			cluster_data[DATA_AT(target_cluster_index, ALPHA_SUM_INDEX)] += splat_alpha;
+			cluster_data[DATA_AT(target_cluster_index, TRANSMITTANCE_INDEX)] *= 1 - splat_alpha;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_R_INDEX)] += splat_alpha * splat_r;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_G_INDEX)] += splat_alpha * splat_g;
+			cluster_data[DATA_AT(target_cluster_index, PREMULTIPLIED_B_INDEX)] += splat_alpha * splat_b;
+
+			// Update cluster mean.
+			const float current_mean = cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)];
+			cluster_data[DATA_AT(target_cluster_index, DEPTH_INDEX)] = current_mean + (splat_depth - current_mean) /
+				cluster_data[DATA_AT(target_cluster_index, SPLAT_COUNT_INDEX)];
+
+			if(invdepth)
+			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+
+			T = test_T;
+
+			// Keep track of last range entry to update this
+			// pixel.
+			last_contributor = contributor;
 		}
 	}
 
