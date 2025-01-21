@@ -19,6 +19,8 @@
 #include "device_launch_parameters.h"
 #include <cub/cub.cuh>
 #include <cub/device/device_radix_sort.cuh>
+#include <thrust/shuffle.h>
+#include <thrust/random.h>
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
@@ -319,6 +321,13 @@ int CudaRasterizer::Rasterizer::forward(
 			binningState.point_list_keys,
 			imgState.ranges);
 	CHECK_CUDA(, debug)
+
+	// Create a random number generator to shuffle the Gaussians.
+	thrust::default_random_engine rng;
+
+	// Shuffle the point lists.
+	shuffle(thrust::device, binningState.point_list_keys, binningState.point_list_keys + num_rendered, rng);
+	shuffle(thrust::device, binningState.point_list, binningState.point_list + num_rendered, rng);
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
