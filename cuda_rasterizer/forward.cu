@@ -307,13 +307,14 @@ renderCUDA(
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
+	constexpr int NUM_SHUFFLED_INDICES = 10000;
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_depth[BLOCK_SIZE];
-	__shared__ int shuffled_indices[5000];
+	__shared__ int shuffled_indices[NUM_SHUFFLED_INDICES];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -326,6 +327,9 @@ renderCUDA(
 	// Initialize shuffled indices array (use thread 0 for this).
 	if (block.thread_rank() == 0) {
 		// Fill with indices in the range.
+		if (toDo > NUM_SHUFFLED_INDICES) {
+			printf("Need to increase to: %d\n", toDo);
+		}
 		for (int i = 0; i < toDo; ++i) {
 			shuffled_indices[i] = range.x + i;
 		}
