@@ -13,6 +13,7 @@
 #include "auxiliary.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <curand_kernel.h>
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -312,6 +313,7 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_depth[BLOCK_SIZE];
+	__shared__ int shuffled_indices[5000];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -321,10 +323,31 @@ renderCUDA(
 
 	float expected_invdepth = 0.0f;
 
+	// Initialize shuffled indices array (use thread 0 for this).
+	if (block.thread_rank() == 0) {
+		// Fill with indices in the range.
+		for (int i = 0; i < toDo; ++i) {
+			shuffled_indices[i] = range.x + i;
+		}
+
+		// Shuffle the indices.
+		curandState state;
+		curand_init(1234, 0, 0, &state);
+		for (int j = toDo-1; j > 0; --j) {
+			int k = curand(&state) % (j + 1);
+			int temp = shuffled_indices[j];
+			shuffled_indices[j] = shuffled_indices[k];
+			shuffled_indices[k] = temp;
+		}
+	}
+
+	// Wait for shuffling to finish before continuing.
+	block.sync();
+
+
 	// Initialize clustering variables.
 	// For each pixel, [ K x [ mean, number, alpha_sum, transmittance, premultiplied_r, premultiplied_g, premultiplied_b ] ]
 	// After clustering, (1 - transmittance) gives final cluster alpha, and (pre_multiplied_color / alpha_sum) gives final cluster color
-
 
 	/// Cluster data is stored in a linearized of K * data points array.
 	float cluster_data[NUMBER_OF_CLUSTERS * NUMBER_OF_DATA_POINTS] = {};
@@ -350,13 +373,13 @@ renderCUDA(
 		int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
 		{
-			int coll_id = point_list[range.x + progress];
+			int coll_id = point_list[shuffled_indices[progress]];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 
 			// Compute collected depth.
-			uint64_t collection_key = point_list_key[range.x + progress];
+			uint64_t collection_key = point_list_key[shuffled_indices[progress]];
 			uint32_t depth_to_uint32 = static_cast<uint32_t>(collection_key & 0xFFFFFFFF);
 			collected_depth[block.thread_rank()] = *reinterpret_cast<float*>(&depth_to_uint32);
 		}
