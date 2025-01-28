@@ -314,7 +314,6 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_depth[BLOCK_SIZE];
-	__shared__ int shuffled_indices[NUM_SHUFFLED_INDICES];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -324,30 +323,26 @@ renderCUDA(
 
 	float expected_invdepth = 0.0f;
 
-	// Initialize shuffled indices array (use thread 0 for this).
-	if (block.thread_rank() == 0) {
-		// Fill with indices in the range.
-		if (toDo > NUM_SHUFFLED_INDICES) {
-			printf("Need to increase to: %d\n", toDo);
-		}
-		for (int i = 0; i < toDo; ++i) {
-			shuffled_indices[i] = range.x + i;
-		}
+	// Initialize shuffled indices array.
+	int shuffled_indices[NUM_SHUFFLED_INDICES];
 
-		// Shuffle the indices.
-		curandState state;
-		curand_init(1234, 0, 0, &state);
-		for (int j = toDo-1; j > 0; --j) {
-			int k = curand(&state) % (j + 1);
-			int temp = shuffled_indices[j];
-			shuffled_indices[j] = shuffled_indices[k];
-			shuffled_indices[k] = temp;
-		}
+	// Fill with indices in the range.
+	if (toDo > NUM_SHUFFLED_INDICES) {
+		printf("Need to increase to: %d\n", toDo);
+	}
+	for (int i = 0; i < toDo; ++i) {
+		shuffled_indices[i] = range.x + i;
 	}
 
-	// Wait for shuffling to finish before continuing.
-	block.sync();
-
+	// Shuffle the indices.
+	curandState state;
+	curand_init(pix_id, 0, 0, &state);
+	for (int j = toDo-1; j > 0; --j) {
+		int k = curand(&state) % (j + 1);
+		int temp = shuffled_indices[j];
+		shuffled_indices[j] = shuffled_indices[k];
+		shuffled_indices[k] = temp;
+	}
 
 	// Initialize clustering variables.
 	// For each pixel, [ K x [ mean, number, alpha_sum, transmittance, premultiplied_r, premultiplied_g, premultiplied_b ] ]
